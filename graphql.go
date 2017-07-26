@@ -31,6 +31,8 @@ type Params struct {
 	// Context may be provided to pass application-specific per-request
 	// information to resolve functions.
 	Context context.Context
+
+	PanicHandler func(err error)
 }
 
 func Do(p Params) *Result {
@@ -59,5 +61,6 @@ func Do(p Params) *Result {
 		OperationName: p.OperationName,
 		Args:          p.VariableValues,
 		Context:       p.Context,
+		PanicHandler:  p.PanicHandler,
 	})
 }

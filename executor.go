@@ -21,6 +21,8 @@ type ExecuteParams struct {
 	// Context may be provided to pass application-specific per-request
 	// information to resolve functions.
 	Context context.Context
+
+	PanicHandler func(err error)
 }
 
 func Execute(p ExecuteParams) (result *Result) {
@@ -44,6 +46,7 @@ func Execute(p ExecuteParams) (result *Result) {
 			Errors:        nil,
 			Result:        result,
 			Context:       p.Context,
+			PanicHandler:  p.PanicHandler,
 		})
 
 		if err != nil {
@@ -60,6 +63,9 @@ func Execute(p ExecuteParams) (result *Result) {
 				var err error
 				if r, ok := r.(error); ok {
 					err = gqlerrors.FormatError(r)
+				}
+				if p.PanicHandler != nil {
+					p.PanicHandler(err)
 				}
 				exeContext.Errors = append(exeContext.Errors, gqlerrors.FormatError(err))
 				result.Errors = exeContext.Errors
@@ -101,6 +107,7 @@ type BuildExecutionCtxParams struct {
 	Errors        []gqlerrors.FormattedError
 	Result        *Result
 	Context       context.Context
+	PanicHandler  func(err error)
 }
 type ExecutionContext struct {
 	Schema         Schema
@@ -110,6 +117,7 @@ type ExecutionContext struct {
 	VariableValues map[string]interface{}
 	Errors         []gqlerrors.FormattedError
 	Context        context.Context
+	PanicHandler   func(err error)
 }
 
 func buildExecutionContext(p BuildExecutionCtxParams) (*ExecutionContext, error) {
@@ -156,6 +164,7 @@ func buildExecutionContext(p BuildExecutionCtxParams) (*ExecutionContext, error)
 	eCtx.VariableValues = variableValues
 	eCtx.Errors = p.Errors
 	eCtx.Context = p.Context
+	eCtx.PanicHandler = p.PanicHandler
 	return eCtx, nil
 }
 
@@ -523,6 +532,9 @@ func resolveField(eCtx *ExecutionContext, parentType *Object, source interface{}
 			if r, ok := r.(error); ok {
 				err = gqlerrors.FormatError(r)
 			}
+			if eCtx.PanicHandler != nil {
+				eCtx.PanicHandler(err)
+			}
 			// send panic upstream
 			if _, ok := returnType.(*NonNull); ok {
 				panic(gqlerrors.FormatError(err))
@@ -594,6 +606,17 @@ func completeValueCatchingError(eCtx *ExecutionContext, returnType Type, fieldAS
 			}
 			if err, ok := r.(gqlerrors.FormattedError); ok {
 				eCtx.Errors = append(eCtx.Errors, err)
+				if eCtx.PanicHandler != nil {
+					eCtx.PanicHandler(err)
+				}
+			} else if err, ok := r.(error); ok {
+				if eCtx.PanicHandler != nil {
+					eCtx.PanicHandler(err)
+				}
+			} else {
+				if eCtx.PanicHandler != nil {
+					eCtx.PanicHandler(nil)
+				}
 			}
 			return completed
 		}
