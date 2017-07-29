@@ -22,7 +22,7 @@ type ExecuteParams struct {
 	// information to resolve functions.
 	Context context.Context
 
-	PanicHandler func(err error)
+	PanicHandler func(ctx context.Context, err error)
 }
 
 func Execute(p ExecuteParams) (result *Result) {
@@ -65,7 +65,7 @@ func Execute(p ExecuteParams) (result *Result) {
 					err = gqlerrors.FormatError(r)
 				}
 				if p.PanicHandler != nil {
-					p.PanicHandler(err)
+					p.PanicHandler(ctx, err)
 				}
 				exeContext.Errors = append(exeContext.Errors, gqlerrors.FormatError(err))
 				result.Errors = exeContext.Errors
@@ -107,7 +107,7 @@ type BuildExecutionCtxParams struct {
 	Errors        []gqlerrors.FormattedError
 	Result        *Result
 	Context       context.Context
-	PanicHandler  func(err error)
+	PanicHandler  func(ctx context.Context, err error)
 }
 type ExecutionContext struct {
 	Schema         Schema
@@ -117,7 +117,7 @@ type ExecutionContext struct {
 	VariableValues map[string]interface{}
 	Errors         []gqlerrors.FormattedError
 	Context        context.Context
-	PanicHandler   func(err error)
+	PanicHandler   func(ctx context.Context, err error)
 }
 
 func buildExecutionContext(p BuildExecutionCtxParams) (*ExecutionContext, error) {
@@ -533,7 +533,7 @@ func resolveField(eCtx *ExecutionContext, parentType *Object, source interface{}
 				err = gqlerrors.FormatError(r)
 			}
 			if eCtx.PanicHandler != nil {
-				eCtx.PanicHandler(err)
+				eCtx.PanicHandler(eCtx.Context, err)
 			}
 			// send panic upstream
 			if _, ok := returnType.(*NonNull); ok {
@@ -607,15 +607,15 @@ func completeValueCatchingError(eCtx *ExecutionContext, returnType Type, fieldAS
 			if err, ok := r.(gqlerrors.FormattedError); ok {
 				eCtx.Errors = append(eCtx.Errors, err)
 				if eCtx.PanicHandler != nil {
-					eCtx.PanicHandler(err)
+					eCtx.PanicHandler(eCtx.Context, err)
 				}
 			} else if err, ok := r.(error); ok {
 				if eCtx.PanicHandler != nil {
-					eCtx.PanicHandler(err)
+					eCtx.PanicHandler(eCtx.Context, err)
 				}
 			} else {
 				if eCtx.PanicHandler != nil {
-					eCtx.PanicHandler(nil)
+					eCtx.PanicHandler(eCtx.Context, nil)
 				}
 			}
 			return completed

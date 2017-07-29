@@ -32,7 +32,7 @@ type Params struct {
 	// information to resolve functions.
 	Context context.Context
 
-	PanicHandler func(err error)
+	PanicHandler func(ctx context.Context, err error)
 }
 
 func Do(p Params) *Result {
