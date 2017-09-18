@@ -32,7 +32,8 @@ type Params struct {
 	// information to resolve functions.
 	Context context.Context
 
-	PanicHandler func(ctx context.Context, err error)
+	// PanicHandler will be called if any of the resolvers or mutations panic
+	PanicHandler func(ctx context.Context, err interface{})
 }
 
 func Do(p Params) *Result {
