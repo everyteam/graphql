@@ -53,7 +53,7 @@ func Execute(p ExecuteParams) (result *Result) {
 	resultChannel := make(chan *Result)
 
 	go func(out chan<- *Result, done <-chan struct{}) {
-		result = &Result{}
+		result := &Result{}
 		if p.Executor == nil {
 			p.Executor = defaultExecutor
 		}
@@ -67,6 +67,7 @@ func Execute(p ExecuteParams) (result *Result) {
 			Errors:        nil,
 			Result:        result,
 			Context:       p.Context,
+			PanicHandler:  p.PanicHandler,
 			Executor:      p.Executor,
 		})
 
