@@ -34,6 +34,10 @@ type Params struct {
 
 	// PanicHandler will be called if any of the resolvers or mutations panic
 	PanicHandler func(ctx context.Context, err interface{})
+
+	// Executor allows to control the behavior of how to perform resolving function that
+	// can be run concurrently. If not given, they will be executed serially.
+	Executor Executor
 }
 
 func Do(p Params) *Result {
@@ -63,5 +67,6 @@ func Do(p Params) *Result {
 		Args:          p.VariableValues,
 		Context:       p.Context,
 		PanicHandler:  p.PanicHandler,
+		Executor:      p.Executor,
 	})
 }
