@@ -6,10 +6,25 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 
 	"github.com/graphql-go/graphql/gqlerrors"
 	"github.com/graphql-go/graphql/language/ast"
 )
+
+type Executor interface {
+	RunMany(f []func())
+}
+
+type SerialExecutor struct{}
+
+func (e *SerialExecutor) RunMany(fs []func()) {
+	for _, f := range fs {
+		f()
+	}
+}
+
+var defaultExecutor = &SerialExecutor{}
 
 type ExecuteParams struct {
 	Schema        Schema
@@ -24,6 +39,8 @@ type ExecuteParams struct {
 
 	// PanicHandler will be called if any of the resolvers or mutations panic
 	PanicHandler func(ctx context.Context, err interface{})
+
+	Executor Executor
 }
 
 func Execute(p ExecuteParams) (result *Result) {
@@ -37,6 +54,9 @@ func Execute(p ExecuteParams) (result *Result) {
 
 	go func(out chan<- *Result, done <-chan struct{}) {
 		result := &Result{}
+		if p.Executor == nil {
+			p.Executor = defaultExecutor
+		}
 
 		exeContext, err := buildExecutionContext(BuildExecutionCtxParams{
 			Schema:        p.Schema,
@@ -48,6 +68,7 @@ func Execute(p ExecuteParams) (result *Result) {
 			Result:        result,
 			Context:       p.Context,
 			PanicHandler:  p.PanicHandler,
+			Executor:      p.Executor,
 		})
 
 		if err != nil {
@@ -109,6 +130,7 @@ type BuildExecutionCtxParams struct {
 	Result        *Result
 	Context       context.Context
 	PanicHandler  func(ctx context.Context, err interface{})
+	Executor      Executor
 }
 type ExecutionContext struct {
 	Schema         Schema
@@ -119,6 +141,7 @@ type ExecutionContext struct {
 	Errors         []gqlerrors.FormattedError
 	Context        context.Context
 	PanicHandler   func(ctx context.Context, err interface{})
+	Executor       Executor
 }
 
 func buildExecutionContext(p BuildExecutionCtxParams) (*ExecutionContext, error) {
@@ -166,6 +189,7 @@ func buildExecutionContext(p BuildExecutionCtxParams) (*ExecutionContext, error)
 	eCtx.Errors = p.Errors
 	eCtx.Context = p.Context
 	eCtx.PanicHandler = p.PanicHandler
+	eCtx.Executor = p.Executor
 	return eCtx, nil
 }
 
@@ -289,14 +313,22 @@ func executeFields(p ExecuteFieldsParams) *Result {
 	}
 
 	finalResults := map[string]interface{}{}
+	fs := make([]func(), 0, len(p.Fields))
+	var resultsMu sync.Mutex
 	for responseName, fieldASTs := range p.Fields {
-		resolved, state := resolveField(p.ExecutionContext, p.ParentType, p.Source, fieldASTs)
-		if state.hasNoFieldDefs {
-			continue
-		}
-		finalResults[responseName] = resolved
+		responseName := responseName
+		fieldASTs := fieldASTs
+		fs = append(fs, func() {
+			resolved, state := resolveField(p.ExecutionContext, p.ParentType, p.Source, fieldASTs)
+			if state.hasNoFieldDefs {
+				return
+			}
+			resultsMu.Lock()
+			finalResults[responseName] = resolved
+			resultsMu.Unlock()
+		})
 	}
-
+	p.ExecutionContext.Executor.RunMany(fs)
 	return &Result{
 		Data:   finalResults,
 		Errors: p.ExecutionContext.Errors,
@@ -807,12 +839,17 @@ func completeListValue(eCtx *ExecutionContext, returnType *List, fieldASTs []*as
 	}
 
 	itemType := returnType.OfType
-	completedResults := []interface{}{}
+	completedResults := make([]interface{}, resultVal.Len())
+	fs := make([]func(), 0, resultVal.Len())
 	for i := 0; i < resultVal.Len(); i++ {
-		val := resultVal.Index(i).Interface()
-		completedItem := completeValueCatchingError(eCtx, itemType, fieldASTs, info, val)
-		completedResults = append(completedResults, completedItem)
+		i := i
+		fs = append(fs, func() {
+			val := resultVal.Index(i).Interface()
+			completedItem := completeValueCatchingError(eCtx, itemType, fieldASTs, info, val)
+			completedResults[i] = completedItem
+		})
 	}
+	eCtx.Executor.RunMany(fs)
 	return completedResults
 }
 
