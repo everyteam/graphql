@@ -6,6 +6,7 @@ import (
 	"github.com/graphql-go/graphql/gqlerrors"
 	"github.com/graphql-go/graphql/language/parser"
 	"github.com/graphql-go/graphql/language/source"
+	opentracing "github.com/opentracing/opentracing-go"
 )
 
 type Params struct {
@@ -45,13 +46,27 @@ func Do(p Params) *Result {
 		Body: []byte(p.RequestString),
 		Name: "GraphQL request",
 	})
+	var span opentracing.Span
+	if p.Context != nil {
+		span, _ = opentracing.StartSpanFromContext(p.Context, "GraphQL Parsing")
+	}
 	AST, err := parser.Parse(parser.ParseParams{Source: source})
+	if span != nil {
+		span.Finish()
+	}
 	if err != nil {
 		return &Result{
 			Errors: gqlerrors.FormatErrors(err),
 		}
 	}
+
+	if p.Context != nil {
+		span, _ = opentracing.StartSpanFromContext(p.Context, "GraphQL Validation")
+	}
 	validationResult := ValidateDocument(&p.Schema, AST, nil)
+	if span != nil {
+		span.Finish()
+	}
 
 	if !validationResult.IsValid {
 		return &Result{
