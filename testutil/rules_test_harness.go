@@ -3,12 +3,13 @@ package testutil
 import (
 	"testing"
 
+	"reflect"
+
 	"github.com/graphql-go/graphql"
 	"github.com/graphql-go/graphql/gqlerrors"
 	"github.com/graphql-go/graphql/language/location"
 	"github.com/graphql-go/graphql/language/parser"
 	"github.com/graphql-go/graphql/language/source"
-	"reflect"
 )
 
 var TestSchema *graphql.Schema
@@ -603,7 +604,7 @@ func ExpectPassesRuleWithSchema(t *testing.T, schema *graphql.Schema, rule graph
 }
 func RuleError(message string, locs ...int) gqlerrors.FormattedError {
 	locations := []location.SourceLocation{}
-	for i := 0; i < len(locs); i = i + 2 {
+	for i := 0; i < len(locs); i += 2 {
 		line := locs[i]
 		col := 0
 		if i+1 < len(locs) {

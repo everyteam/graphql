@@ -619,3 +619,50 @@ func TestTypeSystem_DefinitionExample_IncludesFieldsThunk(t *testing.T) {
 		t.Fatalf("Unexpected result, Diff: %v", testutil.Diff(fieldMap["s"].Type, someObject))
 	}
 }
+
+func TestTypeSystem_DefinitionExampe_AllowsCyclicFieldTypes(t *testing.T) {
+	personType := graphql.NewObject(graphql.ObjectConfig{
+		Name: "Person",
+		Fields: (graphql.FieldsThunk)(func() graphql.Fields {
+			return graphql.Fields{
+				"name": &graphql.Field{
+					Type: graphql.String,
+				},
+				"bestFriend": &graphql.Field{
+					Type: personType,
+				},
+			}
+		}),
+	})
+
+	fieldMap := personType.Fields()
+	if !reflect.DeepEqual(fieldMap["name"].Type, graphql.String) {
+		t.Fatalf("Unexpected result, Diff: %v", testutil.Diff(fieldMap["bestFriend"].Type, personType))
+	}
+
+}
+
+func TestTypeSystem_DefinitionExample_CanAddInputObjectField(t *testing.T) {
+	io := graphql.NewInputObject(graphql.InputObjectConfig{
+		Name: "inputObject",
+		Fields: graphql.InputObjectConfigFieldMap{
+			"value": &graphql.InputObjectFieldConfig{
+				Type: graphql.String,
+			},
+		},
+	})
+	io.AddFieldConfig("newValue", &graphql.InputObjectFieldConfig{
+		Type: graphql.Int,
+	})
+	fieldMap := io.Fields()
+
+	if len(fieldMap) < 2 {
+		t.Fatalf("Unexpected result, inputObject should have two fields, has %d", len(fieldMap))
+	}
+	if _, ok := fieldMap["value"]; !ok {
+		t.Fatal("Unexpected result, inputObject should have a field named 'value'")
+	}
+	if _, ok := fieldMap["newValue"]; !ok {
+		t.Fatal("Unexpected result, inputObject should have a field named 'newValue'")
+	}
+}

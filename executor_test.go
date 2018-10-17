@@ -85,7 +85,7 @@ func TestExecutesArbitraryCode(t *testing.T) {
 				"b": "Boring",
 				"c": []interface{}{
 					"Contrived",
-					nil,
+					"",
 					"Confusing",
 				},
 				"deeper": []interface{}{
@@ -522,6 +522,9 @@ func TestNullsOutErrorSubtrees(t *testing.T) {
 				{
 					Line: 3, Column: 7,
 				},
+			},
+			Path: []interface{}{
+				"syncError",
 			},
 		},
 	}
@@ -1304,8 +1307,17 @@ func TestFailsWhenAnIsTypeOfCheckIsNotMet(t *testing.T) {
 		},
 		Errors: []gqlerrors.FormattedError{
 			{
-				Message:   `Expected value of type "SpecialType" but got: graphql_test.testNotSpecialType.`,
-				Locations: []location.SourceLocation{},
+				Message: `Expected value of type "SpecialType" but got: graphql_test.testNotSpecialType.`,
+				Locations: []location.SourceLocation{
+					{
+						Line:   1,
+						Column: 3,
+					},
+				},
+				Path: []interface{}{
+					"specials",
+					1,
+				},
 			},
 		},
 	}
@@ -1483,6 +1495,56 @@ func TestQuery_ExecutionDoesNotAddErrorsFromFieldResolveFn(t *testing.T) {
 	}
 }
 
+func TestQuery_InputObjectUsesFieldDefaultValueFn(t *testing.T) {
+	inputType := graphql.NewInputObject(graphql.InputObjectConfig{
+		Name: "Input",
+		Fields: graphql.InputObjectConfigFieldMap{
+			"default": &graphql.InputObjectFieldConfig{
+				Type:         graphql.String,
+				DefaultValue: "bar",
+			},
+		},
+	})
+	q := graphql.NewObject(graphql.ObjectConfig{
+		Name: "Query",
+		Fields: graphql.Fields{
+			"a": &graphql.Field{
+				Type: graphql.String,
+				Args: graphql.FieldConfigArgument{
+					"foo": &graphql.ArgumentConfig{
+						Type: graphql.NewNonNull(inputType),
+					},
+				},
+				Resolve: func(p graphql.ResolveParams) (interface{}, error) {
+					val := p.Args["foo"].(map[string]interface{})
+					def, ok := val["default"]
+					if !ok || def == nil {
+						return nil, errors.New("queryError: No 'default' param")
+					}
+					if def.(string) != "bar" {
+						return nil, errors.New("queryError: 'default' param has wrong value")
+					}
+					return "ok", nil
+				},
+			},
+		},
+	})
+	schema, err := graphql.NewSchema(graphql.SchemaConfig{
+		Query: q,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error, got: %v", err)
+	}
+	query := `{ a(foo: {}) }`
+	result := graphql.Do(graphql.Params{
+		Schema:        schema,
+		RequestString: query,
+	})
+	if len(result.Errors) != 0 {
+		t.Fatalf("wrong result, unexpected errors: %+v", result.Errors)
+	}
+}
+
 func TestMutation_ExecutionAddsErrorsFromFieldResolveFn(t *testing.T) {
 	mError := errors.New("mutationError")
 	q := graphql.NewObject(graphql.ObjectConfig{
@@ -1641,6 +1703,70 @@ func TestGraphqlTag(t *testing.T) {
 	}
 }
 
+func TestFieldResolver(t *testing.T) {
+	typeObjectType := graphql.NewObject(graphql.ObjectConfig{
+		Name: "Type",
+		Fields: graphql.Fields{
+			"fooBar": &graphql.Field{Type: graphql.String},
+		},
+	})
+	var baz = &graphql.Field{
+		Type:        typeObjectType,
+		Description: "typeObjectType",
+		Resolve: func(p graphql.ResolveParams) (interface{}, error) {
+			return testCustomResolver{}, nil
+		},
+	}
+	var bazPtr = &graphql.Field{
+		Type:        typeObjectType,
+		Description: "typeObjectType",
+		Resolve: func(p graphql.ResolveParams) (interface{}, error) {
+			return &testCustomResolver{}, nil
+		},
+	}
+	q := graphql.NewObject(graphql.ObjectConfig{
+		Name: "Query",
+		Fields: graphql.Fields{
+			"baz":    baz,
+			"bazPtr": bazPtr,
+		},
+	})
+	schema, err := graphql.NewSchema(graphql.SchemaConfig{
+		Query: q,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error, got: %v", err)
+	}
+	query := "{ baz { fooBar }, bazPtr { fooBar } }"
+	result := graphql.Do(graphql.Params{
+		Schema:        schema,
+		RequestString: query,
+	})
+	if len(result.Errors) != 0 {
+		t.Fatalf("wrong result, unexpected errors: %+v", result.Errors)
+	}
+	expectedData := map[string]interface{}{
+		"baz": map[string]interface{}{
+			"fooBar": "foo bar value",
+		},
+		"bazPtr": map[string]interface{}{
+			"fooBar": "foo bar value",
+		},
+	}
+	if !reflect.DeepEqual(result.Data, expectedData) {
+		t.Fatalf("unexpected result, got: %+v, expected: %+v", result.Data, expectedData)
+	}
+}
+
+type testCustomResolver struct{}
+
+func (r testCustomResolver) Resolve(p graphql.ResolveParams) (interface{}, error) {
+	if p.Info.FieldName == "fooBar" {
+		return "foo bar value", nil
+	}
+	return "", errors.New("invalid field " + p.Info.FieldName)
+}
+
 func TestContextDeadline(t *testing.T) {
 	timeout := time.Millisecond * time.Duration(100)
 	acceptableDelay := time.Millisecond * time.Duration(10)
@@ -1692,4 +1818,417 @@ func TestContextDeadline(t *testing.T) {
 	if !reflect.DeepEqual(expectedErrors, result.Errors) {
 		t.Fatalf("Unexpected result, Diff: %v", testutil.Diff(expectedErrors, result.Errors))
 	}
+}
+
+func TestThunkResultsProcessedCorrectly(t *testing.T) {
+	barType := graphql.NewObject(graphql.ObjectConfig{
+		Name: "Bar",
+		Fields: graphql.Fields{
+			"bazA": &graphql.Field{
+				Type: graphql.String,
+			},
+			"bazB": &graphql.Field{
+				Type: graphql.String,
+			},
+		},
+	})
+
+	fooType := graphql.NewObject(graphql.ObjectConfig{
+		Name: "Foo",
+		Fields: graphql.Fields{
+			"bar": &graphql.Field{
+				Type: barType,
+				Resolve: func(params graphql.ResolveParams) (interface{}, error) {
+					var bar struct {
+						BazA string
+						BazB string
+					}
+					bar.BazA = "A"
+					bar.BazB = "B"
+
+					thunk := func() (interface{}, error) { return &bar, nil }
+					return thunk, nil
+				},
+			},
+		},
+	})
+
+	queryType := graphql.NewObject(graphql.ObjectConfig{
+		Name: "Query",
+		Fields: graphql.Fields{
+			"foo": &graphql.Field{
+				Type: fooType,
+				Resolve: func(params graphql.ResolveParams) (interface{}, error) {
+					var foo struct{}
+					return foo, nil
+				},
+			},
+		},
+	})
+
+	expectNoError := func(err error) {
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+	}
+
+	schema, err := graphql.NewSchema(graphql.SchemaConfig{
+		Query: queryType,
+	})
+	expectNoError(err)
+
+	query := "{ foo { bar { bazA bazB } } }"
+	result := graphql.Do(graphql.Params{
+		Schema:        schema,
+		RequestString: query,
+	})
+	if len(result.Errors) != 0 {
+		t.Fatalf("expected no errors, got %v", result.Errors)
+	}
+
+	foo := result.Data.(map[string]interface{})["foo"].(map[string]interface{})
+	bar, ok := foo["bar"].(map[string]interface{})
+
+	if !ok {
+		t.Errorf("expected bar to be a map[string]interface{}: actual = %v", reflect.TypeOf(foo["bar"]))
+	} else {
+		if got, want := bar["bazA"], "A"; got != want {
+			t.Errorf("foo.bar.bazA: got=%v, want=%v", got, want)
+		}
+		if got, want := bar["bazB"], "B"; got != want {
+			t.Errorf("foo.bar.bazB: got=%v, want=%v", got, want)
+		}
+	}
+
+	if t.Failed() {
+		b, err := json.Marshal(result.Data)
+		expectNoError(err)
+		t.Log(string(b))
+	}
+}
+
+func TestThunkErrorsAreHandledCorrectly(t *testing.T) {
+	var bazCError = errors.New("barC error")
+	barType := graphql.NewObject(graphql.ObjectConfig{
+		Name: "Bar",
+		Fields: graphql.Fields{
+			"bazA": &graphql.Field{
+				Type: graphql.String,
+			},
+			"bazB": &graphql.Field{
+				Type: graphql.String,
+			},
+			"bazC": &graphql.Field{
+				Type: graphql.String,
+				Resolve: func(p graphql.ResolveParams) (interface{}, error) {
+					thunk := func() (interface{}, error) {
+						return nil, bazCError
+					}
+					return thunk, nil
+				},
+			},
+		},
+	})
+
+	fooType := graphql.NewObject(graphql.ObjectConfig{
+		Name: "Foo",
+		Fields: graphql.Fields{
+			"bar": &graphql.Field{
+				Type: barType,
+				Resolve: func(params graphql.ResolveParams) (interface{}, error) {
+					var bar struct {
+						BazA string
+						BazB string
+					}
+					bar.BazA = "A"
+					bar.BazB = "B"
+
+					thunk := func() (interface{}, error) {
+						return &bar, nil
+					}
+					return thunk, nil
+				},
+			},
+		},
+	})
+
+	queryType := graphql.NewObject(graphql.ObjectConfig{
+		Name: "Query",
+		Fields: graphql.Fields{
+			"foo": &graphql.Field{
+				Type: fooType,
+				Resolve: func(params graphql.ResolveParams) (interface{}, error) {
+					var foo struct{}
+					return foo, nil
+				},
+			},
+		},
+	})
+
+	schema, err := graphql.NewSchema(graphql.SchemaConfig{
+		Query: queryType,
+	})
+
+	if err != nil {
+		t.Fatalf("unexpected error, got: %v", err)
+	}
+
+	query := "{ foo { bar { bazA bazB bazC } } }"
+	result := graphql.Do(graphql.Params{
+		Schema:        schema,
+		RequestString: query,
+	})
+
+	foo := result.Data.(map[string]interface{})["foo"].(map[string]interface{})
+	bar, ok := foo["bar"].(map[string]interface{})
+
+	if !ok {
+		t.Errorf("expected bar to be a map[string]interface{}: actual = %v", reflect.TypeOf(foo["bar"]))
+	} else {
+		if got, want := bar["bazA"], "A"; got != want {
+			t.Errorf("foo.bar.bazA: got=%v, want=%v", got, want)
+		}
+		if got, want := bar["bazB"], "B"; got != want {
+			t.Errorf("foo.bar.bazB: got=%v, want=%v", got, want)
+		}
+		if got := bar["bazC"]; got != nil {
+			t.Errorf("foo.bar.bazC: got=%v, want=nil", got)
+		}
+		var errs = result.Errors
+		if len(errs) != 1 {
+			t.Fatalf("expected 1 error, got %v", result.Errors)
+		}
+		if got, want := errs[0].Message, bazCError.Error(); got != want {
+			t.Errorf("expected error: got=%v, want=%v", got, want)
+		}
+	}
+
+	if t.Failed() {
+		b, err := json.Marshal(result.Data)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		t.Log(string(b))
+	}
+}
+
+func assertJSON(t *testing.T, expected string, actual interface{}) {
+	var e interface{}
+	if err := json.Unmarshal([]byte(expected), &e); err != nil {
+		t.Fatalf(err.Error())
+	}
+	aJSON, err := json.MarshalIndent(actual, "", "  ")
+	if err != nil {
+		t.Fatalf(err.Error())
+	}
+	var a interface{}
+	if err := json.Unmarshal(aJSON, &a); err != nil {
+		t.Fatalf(err.Error())
+	}
+	if !reflect.DeepEqual(e, a) {
+		eNormalizedJSON, err := json.MarshalIndent(e, "", "  ")
+		if err != nil {
+			t.Fatalf(err.Error())
+		}
+		t.Fatalf("Expected JSON:\n\n%v\n\nActual JSON:\n\n%v", string(eNormalizedJSON), string(aJSON))
+	}
+}
+
+type extendedError struct {
+	error
+	extensions map[string]interface{}
+}
+
+func (err extendedError) Extensions() map[string]interface{} {
+	return err.extensions
+}
+
+var _ gqlerrors.ExtendedError = &extendedError{}
+
+func testErrors(t *testing.T, nameType graphql.Output, extensions map[string]interface{}) *graphql.Result {
+	type Hero struct {
+		Id      string `graphql:"id"`
+		Name    string
+		Friends []Hero `graphql:"friends"`
+	}
+
+	var heroFields graphql.Fields
+
+	heroType := graphql.NewObject(graphql.ObjectConfig{
+		Name: "Hero",
+		Fields: graphql.FieldsThunk(func() graphql.Fields {
+			return heroFields
+		}),
+	})
+
+	heroFields = graphql.Fields{
+		"id": &graphql.Field{
+			Type: graphql.ID,
+		},
+		"name": &graphql.Field{
+			Type: nameType,
+			Resolve: func(p graphql.ResolveParams) (interface{}, error) {
+				hero := p.Source.(Hero)
+				if hero.Name != "" {
+					return hero.Name, nil
+				}
+				err := fmt.Errorf("Name for character with ID %v could not be fetched.", hero.Id)
+				if extensions != nil {
+					return nil, &extendedError{
+						error:      err,
+						extensions: extensions,
+					}
+				}
+				return nil, err
+			},
+		},
+		"friends": &graphql.Field{
+			Type: graphql.NewList(heroType),
+		},
+	}
+
+	queryType := graphql.NewObject(graphql.ObjectConfig{
+		Name: "Query",
+		Fields: graphql.Fields{
+			"hero": &graphql.Field{
+				Type: heroType,
+				Resolve: func(params graphql.ResolveParams) (interface{}, error) {
+					return Hero{
+						Name: "R2-D2",
+						Friends: []Hero{
+							{Id: "1000", Name: "Luke Skywalker"},
+							{Id: "1002"},
+							{Id: "1003", Name: "Leia Organa"},
+						},
+					}, nil
+				},
+			},
+		},
+	})
+
+	expectNoError := func(err error) {
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+	}
+
+	schema, err := graphql.NewSchema(graphql.SchemaConfig{
+		Query: queryType,
+	})
+	expectNoError(err)
+
+	return graphql.Do(graphql.Params{
+		Schema: schema,
+		RequestString: `{
+  hero {
+    name
+    heroFriends: friends {
+      id
+      name
+    }
+  }
+}`,
+	})
+}
+
+// http://facebook.github.io/graphql/June2018/#example-bc485
+func TestQuery_ErrorPath(t *testing.T) {
+	result := testErrors(t, graphql.String, nil)
+
+	assertJSON(t, `{
+	  "errors": [
+		{
+		  "message": "Name for character with ID 1002 could not be fetched.",
+		  "locations": [ { "line": 6, "column": 7 } ],
+		  "path": [ "hero", "heroFriends", 1, "name" ]
+		}
+	  ],
+	  "data": {
+		"hero": {
+		  "name": "R2-D2",
+		  "heroFriends": [
+			{
+			  "id": "1000",
+			  "name": "Luke Skywalker"
+			},
+			{
+			  "id": "1002",
+			  "name": null
+			},
+			{
+			  "id": "1003",
+			  "name": "Leia Organa"
+			}
+		  ]
+		}
+	  }
+	}`, result)
+}
+
+// http://facebook.github.io/graphql/June2018/#example-08b62
+func TestQuery_ErrorPathForNonNullField(t *testing.T) {
+	result := testErrors(t, graphql.NewNonNull(graphql.String), nil)
+
+	assertJSON(t, `{
+	  "errors": [
+		{
+		  "message": "Name for character with ID 1002 could not be fetched.",
+		  "locations": [ { "line": 6, "column": 7 } ],
+		  "path": [ "hero", "heroFriends", 1, "name" ]
+		}
+	  ],
+	  "data": {
+		"hero": {
+		  "name": "R2-D2",
+		  "heroFriends": [
+			{
+			  "id": "1000",
+			  "name": "Luke Skywalker"
+			},
+			null,
+			{
+			  "id": "1003",
+			  "name": "Leia Organa"
+			}
+		  ]
+		}
+	  }
+	}`, result)
+}
+
+// http://facebook.github.io/graphql/June2018/#example-fce18
+func TestQuery_ErrorExtensions(t *testing.T) {
+	result := testErrors(t, graphql.NewNonNull(graphql.String), map[string]interface{}{
+		"code":      "CAN_NOT_FETCH_BY_ID",
+		"timestamp": "Fri Feb 9 14:33:09 UTC 2018",
+	})
+
+	assertJSON(t, `{
+	  "errors": [
+		{
+		  "message": "Name for character with ID 1002 could not be fetched.",
+		  "locations": [ { "line": 6, "column": 7 } ],
+		  "path": [ "hero", "heroFriends", 1, "name" ],
+		  "extensions": {
+			  "code": "CAN_NOT_FETCH_BY_ID",
+			  "timestamp": "Fri Feb 9 14:33:09 UTC 2018"
+		  }}
+	  ],
+	  "data": {
+		"hero": {
+		  "name": "R2-D2",
+		  "heroFriends": [
+			{
+			  "id": "1000",
+			  "name": "Luke Skywalker"
+			},
+			null,
+			{
+			  "id": "1003",
+			  "name": "Leia Organa"
+			}
+		  ]
+		}
+	  }
+	}`, result)
 }

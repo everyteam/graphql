@@ -3,6 +3,7 @@ package graphql
 import (
 	"fmt"
 	"reflect"
+	"sort"
 
 	"github.com/graphql-go/graphql/language/ast"
 	"github.com/graphql-go/graphql/language/printer"
@@ -518,11 +519,16 @@ func init() {
 					return nil, nil
 				}
 				fields := []*FieldDefinition{}
-				for _, field := range ttype.Fields() {
+				var fieldNames sort.StringSlice
+				for name, field := range ttype.Fields() {
 					if !includeDeprecated && field.DeprecationReason != "" {
 						continue
 					}
-					fields = append(fields, field)
+					fieldNames = append(fieldNames, name)
+				}
+				sort.Sort(fieldNames)
+				for _, name := range fieldNames {
+					fields = append(fields, ttype.Fields()[name])
 				}
 				return fields, nil
 			case *Interface:
@@ -544,8 +550,7 @@ func init() {
 	TypeType.AddFieldConfig("interfaces", &Field{
 		Type: NewList(NewNonNull(TypeType)),
 		Resolve: func(p ResolveParams) (interface{}, error) {
-			switch ttype := p.Source.(type) {
-			case *Object:
+			if ttype, ok := p.Source.(*Object); ok {
 				return ttype.Interfaces(), nil
 			}
 			return nil, nil
@@ -573,8 +578,7 @@ func init() {
 		},
 		Resolve: func(p ResolveParams) (interface{}, error) {
 			includeDeprecated, _ := p.Args["includeDeprecated"].(bool)
-			switch ttype := p.Source.(type) {
-			case *Enum:
+			if ttype, ok := p.Source.(*Enum); ok {
 				if includeDeprecated {
 					return ttype.Values(), nil
 				}
@@ -593,8 +597,7 @@ func init() {
 	TypeType.AddFieldConfig("inputFields", &Field{
 		Type: NewList(NewNonNull(InputValueType)),
 		Resolve: func(p ResolveParams) (interface{}, error) {
-			switch ttype := p.Source.(type) {
-			case *InputObject:
+			if ttype, ok := p.Source.(*InputObject); ok {
 				fields := []*InputObjectField{}
 				for _, field := range ttype.Fields() {
 					fields = append(fields, field)
